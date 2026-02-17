@@ -1,0 +1,876 @@
+import { useState, useEffect, useCallback } from "react";
+
+// ─── MOCK DATA ────────────────────────────────────────────────────────────────
+const SAMPLE_SMS = [
+  { id: "tx001", raw: "You have received 15,000 RWF from 0788123456 (John Doe). Your new balance is 87,500 RWF. Ref: MMP250217001", time: "2025-02-17T07:14:22", type: "received", amount: 15000, sender: "John Doe", phone: "0788123456", ref: "MMP250217001", provider: "MTN" },
+  { id: "tx002", raw: "You have sent 8,000 RWF to 0789456789 (Alice Uwase). Your new balance is 79,500 RWF. Ref: MMP250217002", time: "2025-02-17T08:32:10", type: "sent", amount: 8000, sender: "Alice Uwase", phone: "0789456789", ref: "MMP250217002", provider: "MTN" },
+  { id: "tx003", raw: "You have received 50,000 RWF from 0728654321 (Bob Mutara). Your new balance is 129,500 RWF. Ref: AMP250217003", time: "2025-02-17T09:55:44", type: "received", amount: 50000, sender: "Bob Mutara", phone: "0728654321", ref: "AMP250217003", provider: "Airtel" },
+  { id: "tx004", raw: "You have sent 3,500 RWF to 0788000111 (Kigali Market). Your new balance is 126,000 RWF. Ref: MMP250217004", time: "2025-02-17T10:20:05", type: "sent", amount: 3500, sender: "Kigali Market", phone: "0788000111", ref: "MMP250217004", provider: "MTN" },
+  { id: "tx005", raw: "You have received 25,000 RWF from 0722987654 (Marie Claire). Your new balance is 151,000 RWF. Ref: AMP250217005", time: "2025-02-17T11:45:33", type: "received", amount: 25000, sender: "Marie Claire", phone: "0722987654", ref: "AMP250217005", provider: "Airtel" },
+  { id: "tx006", raw: "You have sent 12,000 RWF to 0788222333 (Emmanuel N.). Your new balance is 139,000 RWF. Ref: MMP250217006", time: "2025-02-17T13:10:18", type: "sent", amount: 12000, sender: "Emmanuel N.", phone: "0788222333", ref: "MMP250217006", provider: "MTN" },
+  { id: "tx007", raw: "You have received 100,000 RWF from 0729111222 (Business Hub). Your new balance is 239,000 RWF. Ref: AMP250217007", time: "2025-02-17T14:30:55", type: "received", amount: 100000, sender: "Business Hub", phone: "0729111222", ref: "AMP250217007", provider: "Airtel" },
+  { id: "tx008", raw: "You have sent 45,000 RWF to 0788444555 (Rent Payment). Your new balance is 194,000 RWF. Ref: MMP250217008", time: "2025-02-17T15:55:12", type: "sent", amount: 45000, sender: "Rent Payment", phone: "0788444555", ref: "MMP250217008", provider: "MTN" },
+];
+
+const SAVINGS_DEDUCTION = 500;
+
+// ─── PARSERS ──────────────────────────────────────────────────────────────────
+function parseSMS(raw) {
+  const recvMTN = raw.match(/received ([\d,]+) RWF from ([\d]+) \((.+?)\)/);
+  const sentMTN = raw.match(/sent ([\d,]+) RWF to ([\d]+) \((.+?)\)/);
+  const ref = raw.match(/Ref:\s*(\w+)/)?.[1];
+  const balance = raw.match(/balance is ([\d,]+) RWF/)?.[1]?.replace(/,/g, "");
+  if (recvMTN) return { type: "received", amount: parseInt(recvMTN[1].replace(/,/g, "")), phone: recvMTN[2], name: recvMTN[3], ref, balance: parseInt(balance) };
+  if (sentMTN) return { type: "sent", amount: parseInt(sentMTN[1].replace(/,/g, "")), phone: sentMTN[2], name: sentMTN[3], ref, balance: parseInt(balance) };
+  return null;
+}
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+const fmt = (n) => new Intl.NumberFormat("rw-RW").format(n) + " RWF";
+const fmtTime = (t) => new Date(t).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+const fmtDate = (t) => new Date(t).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+const totalReceived = (txs) => txs.filter(t => t.type === "received").reduce((s, t) => s + t.amount, 0);
+const totalSent = (txs) => txs.filter(t => t.type === "sent").reduce((s, t) => s + t.amount, 0);
+const totalSavings = (txs) => txs.filter(t => t.type === "received").length * SAVINGS_DEDUCTION;
+
+// ─── ICONS ────────────────────────────────────────────────────────────────────
+const Icon = ({ name, size = 18 }) => {
+  const icons = {
+    dashboard: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>,
+    tx: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>,
+    savings: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>,
+    sms: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>,
+    pos: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>,
+    report: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>,
+    up: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>,
+    down: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>,
+    refresh: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>,
+    send: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>,
+    shield: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
+    wifi: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>,
+    check: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>,
+    bell: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>,
+    menu: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>,
+    x: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+  };
+  return icons[name] || null;
+};
+
+// ─── STYLES ───────────────────────────────────────────────────────────────────
+const styles = `
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;500;600;700;800&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0b0f0e;
+    --surface: #121918;
+    --surface2: #1a2422;
+    --border: #1f2e2b;
+    --border2: #263530;
+    --green: #00e5a0;
+    --green-dim: #00a370;
+    --green-glow: rgba(0,229,160,0.12);
+    --red: #ff4d6d;
+    --red-dim: #c0384f;
+    --yellow: #ffd166;
+    --blue: #48cae4;
+    --text: #e8f0ef;
+    --text2: #7a9994;
+    --text3: #4a6560;
+    --mtn: #ffcc00;
+    --airtel: #ff0000;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --mono: 'Space Mono', monospace;
+    --sans: 'Syne', sans-serif;
+  }
+
+  body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; min-height: 100vh; overflow-x: hidden; }
+
+  .app { display: flex; min-height: 100vh; }
+
+  /* ── SIDEBAR ── */
+  .sidebar {
+    width: 240px; min-width: 240px; background: var(--surface); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; padding: 0; position: fixed; top: 0; left: 0; height: 100vh; z-index: 100;
+    transition: transform 0.3s ease;
+  }
+  .sidebar.hidden { transform: translateX(-100%); }
+  .sidebar-logo { padding: 24px 20px 20px; border-bottom: 1px solid var(--border); }
+  .sidebar-logo .brand { font-size: 20px; font-weight: 800; color: var(--green); letter-spacing: -0.5px; }
+  .sidebar-logo .sub { font-size: 11px; color: var(--text3); font-family: var(--mono); margin-top: 2px; }
+  .sidebar-logo .phone-badge { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding: 6px 10px; background: var(--green-glow); border: 1px solid rgba(0,229,160,0.2); border-radius: 6px; font-family: var(--mono); font-size: 11px; color: var(--green); }
+  .phone-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  .nav { flex: 1; padding: 16px 12px; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--radius-sm); cursor: pointer; color: var(--text2); transition: all 0.15s; font-weight: 500; font-size: 13.5px; border: 1px solid transparent; }
+  .nav-item:hover { background: var(--surface2); color: var(--text); }
+  .nav-item.active { background: var(--green-glow); color: var(--green); border-color: rgba(0,229,160,0.2); }
+  .nav-item svg { flex-shrink: 0; }
+
+  .sidebar-footer { padding: 16px; border-top: 1px solid var(--border); }
+  .status-pill { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--surface2); border-radius: var(--radius-sm); font-size: 12px; color: var(--text2); }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; flex-shrink: 0; }
+
+  /* ── MAIN ── */
+  .main { flex: 1; margin-left: 240px; display: flex; flex-direction: column; min-height: 100vh; transition: margin-left 0.3s; }
+  .main.full { margin-left: 0; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; padding: 16px 28px; border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 50; }
+  .topbar-left { display: flex; align-items: center; gap: 12px; }
+  .topbar h1 { font-size: 18px; font-weight: 700; }
+  .topbar-right { display: flex; align-items: center; gap: 12px; }
+  .content { padding: 28px; flex: 1; }
+
+  /* ── CARDS ── */
+  .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 28px; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; position: relative; overflow: hidden; }
+  .stat-card::before { content: ''; position: absolute; top: -40px; right: -40px; width: 100px; height: 100px; border-radius: 50%; opacity: 0.06; }
+  .stat-card.green::before { background: var(--green); }
+  .stat-card.red::before { background: var(--red); }
+  .stat-card.yellow::before { background: var(--yellow); }
+  .stat-card.blue::before { background: var(--blue); }
+  .stat-label { font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.8px; font-family: var(--mono); margin-bottom: 8px; }
+  .stat-value { font-size: 22px; font-weight: 800; line-height: 1.1; }
+  .stat-value.green { color: var(--green); }
+  .stat-value.red { color: var(--red); }
+  .stat-value.yellow { color: var(--yellow); }
+  .stat-value.blue { color: var(--blue); }
+  .stat-sub { font-size: 12px; color: var(--text3); margin-top: 6px; }
+  .stat-icon { position: absolute; top: 20px; right: 20px; opacity: 0.4; }
+
+  /* ── TABLE ── */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .card-header { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px; border-bottom: 1px solid var(--border); }
+  .card-title { font-size: 15px; font-weight: 700; }
+  .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 600; font-family: var(--mono); }
+  .badge.green { background: rgba(0,229,160,0.12); color: var(--green); }
+  .badge.red { background: rgba(255,77,109,0.12); color: var(--red); }
+  .badge.yellow { background: rgba(255,209,102,0.12); color: var(--yellow); }
+  .badge.blue { background: rgba(72,202,228,0.12); color: var(--blue); }
+  .badge.mtn { background: rgba(255,204,0,0.12); color: var(--mtn); }
+  .badge.airtel { background: rgba(255,0,0,0.12); color: var(--airtel); }
+
+  .tx-table { width: 100%; }
+  .tx-row { display: grid; grid-template-columns: 40px 1fr 130px 140px 110px 90px; align-items: center; padding: 14px 20px; border-bottom: 1px solid var(--border); transition: background 0.1s; gap: 12px; }
+  .tx-row:last-child { border-bottom: none; }
+  .tx-row:hover { background: var(--surface2); }
+  .tx-row.header { color: var(--text3); font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; font-family: var(--mono); cursor: default; }
+  .tx-row.header:hover { background: transparent; }
+  .tx-icon { width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .tx-icon.received { background: rgba(0,229,160,0.12); color: var(--green); }
+  .tx-icon.sent { background: rgba(255,77,109,0.12); color: var(--red); }
+  .tx-name { font-weight: 600; font-size: 13.5px; }
+  .tx-phone { font-size: 11.5px; color: var(--text3); font-family: var(--mono); margin-top: 1px; }
+  .tx-amount { font-family: var(--mono); font-weight: 700; font-size: 13.5px; }
+  .tx-amount.received { color: var(--green); }
+  .tx-amount.sent { color: var(--red); }
+  .tx-time { font-family: var(--mono); font-size: 12px; color: var(--text2); }
+  .tx-ref { font-family: var(--mono); font-size: 10.5px; color: var(--text3); }
+
+  /* ── PROGRESS ── */
+  .progress-bar { height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; margin: 8px 0; }
+  .progress-fill { height: 100%; border-radius: 4px; transition: width 0.6s ease; }
+  .progress-fill.green { background: linear-gradient(90deg, var(--green-dim), var(--green)); }
+  .progress-fill.yellow { background: linear-gradient(90deg, #c49700, var(--yellow)); }
+
+  /* ── SAVINGS ── */
+  .savings-ring { position: relative; width: 160px; height: 160px; margin: 0 auto 20px; }
+  .savings-ring svg { transform: rotate(-90deg); }
+  .savings-ring-text { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); text-align: center; }
+  .savings-ring-val { font-size: 22px; font-weight: 800; color: var(--green); }
+  .savings-ring-lbl { font-size: 11px; color: var(--text3); font-family: var(--mono); }
+
+  /* ── SMS FEED ── */
+  .sms-item { padding: 16px 20px; border-bottom: 1px solid var(--border); }
+  .sms-item:last-child { border-bottom: none; }
+  .sms-raw { font-family: var(--mono); font-size: 11.5px; color: var(--text2); line-height: 1.6; margin-bottom: 8px; background: var(--surface2); padding: 10px 12px; border-radius: var(--radius-sm); border-left: 3px solid var(--border2); }
+  .sms-parsed { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  /* ── POS ── */
+  .pos-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .key { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; text-align: center; cursor: pointer; font-size: 20px; font-weight: 700; transition: all 0.1s; user-select: none; }
+  .key:hover { background: var(--border); border-color: var(--green); }
+  .key:active { transform: scale(0.95); }
+  .key.action { background: var(--green-glow); border-color: rgba(0,229,160,0.3); color: var(--green); }
+  .key.clear { background: rgba(255,77,109,0.08); border-color: rgba(255,77,109,0.2); color: var(--red); }
+  .pos-display { background: var(--surface2); border: 1px solid var(--border2); border-radius: var(--radius); padding: 16px 20px; margin-bottom: 20px; min-height: 80px; }
+  .pos-amount { font-family: var(--mono); font-size: 36px; font-weight: 700; color: var(--green); }
+  .pos-label { font-size: 11px; color: var(--text3); font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.8px; }
+  .input-field { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 14px; color: var(--text); font-family: var(--mono); font-size: 13px; width: 100%; outline: none; transition: border-color 0.2s; }
+  .input-field:focus { border-color: var(--green); }
+  .input-field::placeholder { color: var(--text3); }
+
+  /* ── BUTTONS ── */
+  .btn { display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px; border-radius: var(--radius-sm); font-weight: 600; font-size: 13px; cursor: pointer; transition: all 0.15s; border: none; font-family: var(--sans); }
+  .btn-primary { background: var(--green); color: #000; }
+  .btn-primary:hover { background: #00ffa8; transform: translateY(-1px); }
+  .btn-outline { background: transparent; border: 1px solid var(--border2); color: var(--text); }
+  .btn-outline:hover { border-color: var(--green); color: var(--green); }
+  .btn-danger { background: rgba(255,77,109,0.12); border: 1px solid rgba(255,77,109,0.3); color: var(--red); }
+  .btn-icon { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px; cursor: pointer; color: var(--text2); display: flex; align-items: center; transition: all 0.15s; }
+  .btn-icon:hover { border-color: var(--green); color: var(--green); }
+
+  /* ── FILTERS ── */
+  .filter-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .filter-btn { padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; cursor: pointer; border: 1px solid var(--border); background: transparent; color: var(--text2); transition: all 0.15s; font-family: var(--sans); }
+  .filter-btn:hover { border-color: var(--green); color: var(--green); }
+  .filter-btn.active { background: var(--green-glow); border-color: rgba(0,229,160,0.3); color: var(--green); }
+
+  /* ── REPORT ── */
+  .report-section { margin-bottom: 24px; }
+  .report-title { font-size: 13px; font-weight: 700; color: var(--text2); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; font-family: var(--mono); }
+  .report-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .report-row:last-child { border-bottom: none; }
+
+  /* ── TOAST ── */
+  .toast { position: fixed; bottom: 24px; right: 24px; background: var(--surface); border: 1px solid var(--green); color: var(--text); padding: 12px 18px; border-radius: var(--radius); font-size: 13px; z-index: 9999; display: flex; align-items: center; gap: 8px; animation: slideIn 0.3s ease; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
+  @keyframes slideIn { from{transform:translateY(20px);opacity:0} to{transform:translateY(0);opacity:1} }
+
+  /* ── MOBILE HAMBURGER ── */
+  .hamburger { display: none; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 7px; cursor: pointer; color: var(--text); }
+  .overlay { display: none; }
+
+  /* ── CHART BARS ── */
+  .mini-chart { display: flex; align-items: flex-end; gap: 4px; height: 60px; }
+  .bar { flex: 1; border-radius: 3px 3px 0 0; transition: opacity 0.2s; }
+  .bar:hover { opacity: 0.7; }
+  .bar.recv { background: var(--green); }
+  .bar.sent { background: var(--red); }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 1100px) {
+    .stat-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 768px) {
+    .sidebar { transform: translateX(-100%); z-index: 200; }
+    .sidebar.open { transform: translateX(0); box-shadow: 4px 0 20px rgba(0,0,0,0.5); }
+    .main { margin-left: 0; }
+    .hamburger { display: flex; }
+    .overlay { display: block; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 150; }
+    .stat-grid { grid-template-columns: 1fr 1fr; }
+    .content { padding: 16px; }
+    .tx-row { grid-template-columns: 36px 1fr 100px 80px; }
+    .tx-row .tx-ref, .tx-row .col-provider { display: none; }
+    .pos-grid { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 480px) {
+    .stat-grid { grid-template-columns: 1fr; }
+    .tx-row { grid-template-columns: 36px 1fr 100px; }
+    .tx-row .tx-time { display: none; }
+  }
+`;
+
+// ─── COMPONENTS ──────────────────────────────────────────────────────────────
+
+function SavingsRing({ amount, target = 500000 }) {
+  const pct = Math.min(amount / target, 1);
+  const r = 68; const circ = 2 * Math.PI * r;
+  const dash = pct * circ;
+  return (
+    <div className="savings-ring">
+      <svg width="160" height="160" viewBox="0 0 160 160">
+        <circle cx="80" cy="80" r={r} fill="none" stroke="#1a2422" strokeWidth="12"/>
+        <circle cx="80" cy="80" r={r} fill="none" stroke="#00e5a0" strokeWidth="12"
+          strokeDasharray={`${dash} ${circ}`} strokeLinecap="round"/>
+      </svg>
+      <div className="savings-ring-text">
+        <div className="savings-ring-val">{Math.round(pct * 100)}%</div>
+        <div className="savings-ring-lbl">of goal</div>
+      </div>
+    </div>
+  );
+}
+
+function MiniChart({ transactions }) {
+  const hours = Array.from({ length: 8 }, (_, i) => i * 3);
+  const maxAmt = 100000;
+  return (
+    <div className="mini-chart">
+      {hours.map(h => {
+        const hTx = transactions.filter(t => {
+          const th = new Date(t.time).getHours();
+          return th >= h && th < h + 3;
+        });
+        const recv = hTx.filter(t => t.type === "received").reduce((s, t) => s + t.amount, 0);
+        const sent = hTx.filter(t => t.type === "sent").reduce((s, t) => s + t.amount, 0);
+        return (
+          <div key={h} style={{ flex: 1, display: "flex", gap: 2, alignItems: "flex-end", height: "100%" }}>
+            <div className="bar recv" style={{ height: `${Math.min((recv / maxAmt) * 100, 100)}%`, flex: 1 }} title={`Received: ${fmt(recv)}`}/>
+            <div className="bar sent" style={{ height: `${Math.min((sent / maxAmt) * 100, 100)}%`, flex: 1 }} title={`Sent: ${fmt(sent)}`}/>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── VIEWS ────────────────────────────────────────────────────────────────────
+
+function Dashboard({ transactions }) {
+  const recv = totalReceived(transactions);
+  const sent = totalSent(transactions);
+  const savings = totalSavings(transactions);
+  const net = recv - sent - savings;
+  const recvCount = transactions.filter(t => t.type === "received").length;
+  const sentCount = transactions.filter(t => t.type === "sent").length;
+  const recent = [...transactions].sort((a, b) => new Date(b.time) - new Date(a.time)).slice(0, 5);
+
+  return (
+    <div>
+      <div className="stat-grid">
+        <div className="stat-card green">
+          <div className="stat-label">Total Received</div>
+          <div className="stat-value green">{fmt(recv)}</div>
+          <div className="stat-sub">{recvCount} transactions today</div>
+          <div className="stat-icon"><Icon name="down" size={28}/></div>
+        </div>
+        <div className="stat-card red">
+          <div className="stat-label">Total Sent</div>
+          <div className="stat-value red">{fmt(sent)}</div>
+          <div className="stat-sub">{sentCount} transactions today</div>
+          <div className="stat-icon"><Icon name="up" size={28}/></div>
+        </div>
+        <div className="stat-card yellow">
+          <div className="stat-label">Auto Savings</div>
+          <div className="stat-value yellow">{fmt(savings)}</div>
+          <div className="stat-sub">500 RWF × {recvCount} received</div>
+          <div className="stat-icon"><Icon name="savings" size={28}/></div>
+        </div>
+        <div className="stat-card blue">
+          <div className="stat-label">Net Balance</div>
+          <div className="stat-value blue">{fmt(net)}</div>
+          <div className="stat-sub">After savings deduction</div>
+          <div className="stat-icon"><Icon name="shield" size={28}/></div>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 16, marginBottom: 20 }}>
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">Activity Overview — Today</span>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--green)" }}>
+                <span style={{ width: 8, height: 8, background: "var(--green)", borderRadius: 2, display: "inline-block" }}/> Received
+              </span>
+              <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--red)" }}>
+                <span style={{ width: 8, height: 8, background: "var(--red)", borderRadius: 2, display: "inline-block" }}/> Sent
+              </span>
+            </div>
+          </div>
+          <div style={{ padding: "20px", height: 100 }}>
+            <MiniChart transactions={transactions}/>
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 10, color: "var(--text3)", fontFamily: "var(--mono)" }}>
+              {["00", "03", "06", "09", "12", "15", "18", "21"].map(h => <span key={h}>{h}h</span>)}
+            </div>
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-header"><span className="card-title">Providers</span></div>
+          <div style={{ padding: "16px 20px" }}>
+            {["MTN", "Airtel"].map(p => {
+              const ptxs = transactions.filter(t => t.provider === p);
+              const pamt = ptxs.reduce((s, t) => s + (t.type === "received" ? t.amount : 0), 0);
+              const pct = Math.round((ptxs.length / transactions.length) * 100);
+              return (
+                <div key={p} style={{ marginBottom: 16 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span className={`badge ${p === "MTN" ? "mtn" : "airtel"}`}>{p} MoMo</span>
+                    <span style={{ fontSize: 12, fontFamily: "var(--mono)", color: "var(--text2)" }}>{pct}%</span>
+                  </div>
+                  <div className="progress-bar"><div className="progress-fill green" style={{ width: `${pct}%` }}/></div>
+                  <div style={{ fontSize: 11, color: "var(--text3)", fontFamily: "var(--mono)" }}>{ptxs.length} tx · {fmt(pamt)} received</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header">
+          <span className="card-title">Recent Transactions</span>
+          <span className="badge green">{transactions.length} today</span>
+        </div>
+        <div className="tx-table">
+          <div className="tx-row header">
+            <span/>
+            <span>Counterparty</span>
+            <span>Amount</span>
+            <span>Time</span>
+            <span>Ref</span>
+            <span>Provider</span>
+          </div>
+          {recent.map(tx => (
+            <div className="tx-row" key={tx.id}>
+              <div className={`tx-icon ${tx.type}`}>{tx.type === "received" ? <Icon name="down" size={14}/> : <Icon name="up" size={14}/>}</div>
+              <div><div className="tx-name">{tx.sender}</div><div className="tx-phone">{tx.phone}</div></div>
+              <div className={`tx-amount ${tx.type}`}>{tx.type === "received" ? "+" : "−"}{fmt(tx.amount)}</div>
+              <div className="tx-time">{fmtTime(tx.time)}</div>
+              <div className="tx-ref">{tx.ref}</div>
+              <span className={`badge ${tx.provider === "MTN" ? "mtn" : "airtel"} col-provider`}>{tx.provider}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Transactions({ transactions }) {
+  const [filter, setFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const filtered = transactions.filter(tx => {
+    const matchType = filter === "all" || tx.type === filter;
+    const matchSearch = !search || tx.sender.toLowerCase().includes(search.toLowerCase()) || tx.ref.toLowerCase().includes(search.toLowerCase()) || tx.phone.includes(search);
+    return matchType && matchSearch;
+  });
+  return (
+    <div>
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-header" style={{ flexWrap: "wrap", gap: 12 }}>
+          <span className="card-title">Transaction History</span>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <input className="input-field" placeholder="Search name, ref, phone..." value={search} onChange={e => setSearch(e.target.value)} style={{ width: 220 }}/>
+            <div className="filter-bar">
+              {["all", "received", "sent"].map(f => (
+                <button key={f} className={`filter-btn ${filter === f ? "active" : ""}`} onClick={() => setFilter(f)}>
+                  {f === "all" ? "All" : f === "received" ? "Received" : "Sent"}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="tx-table">
+          <div className="tx-row header"><span/><span>Counterparty</span><span>Amount</span><span>Time</span><span>Ref</span><span>Provider</span></div>
+          {filtered.length === 0 && <div style={{ padding: "40px", textAlign: "center", color: "var(--text3)" }}>No transactions found</div>}
+          {filtered.map(tx => (
+            <div className="tx-row" key={tx.id}>
+              <div className={`tx-icon ${tx.type}`}>{tx.type === "received" ? <Icon name="down" size={14}/> : <Icon name="up" size={14}/>}</div>
+              <div><div className="tx-name">{tx.sender}</div><div className="tx-phone">{tx.phone}</div></div>
+              <div className={`tx-amount ${tx.type}`}>{tx.type === "received" ? "+" : "−"}{fmt(tx.amount)}</div>
+              <div className="tx-time">{fmtDate(tx.time)} {fmtTime(tx.time)}</div>
+              <div className="tx-ref">{tx.ref}</div>
+              <span className={`badge ${tx.provider === "MTN" ? "mtn" : "airtel"} col-provider`}>{tx.provider}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ padding: "12px 20px", borderTop: "1px solid var(--border)", display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text3)", fontFamily: "var(--mono)" }}>
+          <span>Showing {filtered.length} of {transactions.length} transactions</span>
+          <span>Total: {fmt(filtered.reduce((s, t) => s + (t.type === "received" ? t.amount : -t.amount), 0))}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SavingsView({ transactions }) {
+  const savings = totalSavings(transactions);
+  const target = 500000;
+  const recvCount = transactions.filter(t => t.type === "received").length;
+  const savingEntries = transactions.filter(t => t.type === "received").map(t => ({
+    ...t, savedAmount: SAVINGS_DEDUCTION
+  }));
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 20, marginBottom: 20 }}>
+        <div className="card" style={{ textAlign: "center", padding: "28px 20px" }}>
+          <div style={{ fontSize: 11, color: "var(--text3)", fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 20 }}>Monthly Savings Goal</div>
+          <SavingsRing amount={savings} target={target}/>
+          <div style={{ fontSize: 28, fontWeight: 800, color: "var(--yellow)" }}>{fmt(savings)}</div>
+          <div style={{ fontSize: 12, color: "var(--text3)", marginTop: 4 }}>Saved this month</div>
+          <div style={{ marginTop: 16, padding: "12px", background: "var(--surface2)", borderRadius: "var(--radius-sm)" }}>
+            <div style={{ fontSize: 11, color: "var(--text3)", fontFamily: "var(--mono)" }}>GOAL: {fmt(target)}</div>
+            <div className="progress-bar" style={{ marginTop: 8 }}><div className="progress-fill yellow" style={{ width: `${Math.min((savings / target) * 100, 100)}%` }}/></div>
+            <div style={{ fontSize: 11, color: "var(--text2)", fontFamily: "var(--mono)", marginTop: 4 }}>{fmt(target - savings)} remaining</div>
+          </div>
+        </div>
+        <div>
+          <div className="stat-grid" style={{ gridTemplateColumns: "1fr 1fr", marginBottom: 16 }}>
+            <div className="stat-card yellow">
+              <div className="stat-label">Per Transaction</div>
+              <div className="stat-value yellow">{fmt(SAVINGS_DEDUCTION)}</div>
+              <div className="stat-sub">Auto-deducted</div>
+            </div>
+            <div className="stat-card green">
+              <div className="stat-label">Transactions Saved</div>
+              <div className="stat-value green">{recvCount}</div>
+              <div className="stat-sub">Incoming transactions</div>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header"><span className="card-title">Savings Log</span><span className="badge yellow">{recvCount} entries</span></div>
+            <div style={{ maxHeight: 280, overflowY: "auto" }}>
+              {savingEntries.map(e => (
+                <div key={e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 20px", borderBottom: "1px solid var(--border)" }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{e.sender}</div>
+                    <div style={{ fontSize: 11, color: "var(--text3)", fontFamily: "var(--mono)" }}>{fmtDate(e.time)} {fmtTime(e.time)} · {e.ref}</div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ color: "var(--yellow)", fontFamily: "var(--mono)", fontWeight: 700 }}>+{fmt(SAVINGS_DEDUCTION)}</div>
+                    <div style={{ fontSize: 11, color: "var(--text3)" }}>from {fmt(e.amount)}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SMSFeed({ transactions, onAddSMS }) {
+  const [smsInput, setSmsInput] = useState("");
+  const [parsed, setParsed] = useState(null);
+  const [error, setError] = useState("");
+
+  const tryParse = (txt) => {
+    setSmsInput(txt);
+    const p = parseSMS(txt);
+    setParsed(p);
+    setError(p ? "" : txt.length > 10 ? "Could not parse — check format" : "");
+  };
+
+  const handleAdd = () => {
+    if (!parsed) return;
+    onAddSMS({ ...parsed, id: `tx${Date.now()}`, raw: smsInput, time: new Date().toISOString(), provider: smsInput.includes("AMP") ? "Airtel" : "MTN", sender: parsed.name, phone: parsed.phone });
+    setSmsInput(""); setParsed(null);
+  };
+
+  return (
+    <div>
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-header">
+          <span className="card-title">Manual SMS Entry</span>
+          <span className="badge blue">Parser Active</span>
+        </div>
+        <div style={{ padding: "20px" }}>
+          <div style={{ marginBottom: 12, fontSize: 12, color: "var(--text3)" }}>Paste an MTN MoMo or Airtel Money SMS to parse and add it to your records.</div>
+          <textarea
+            className="input-field"
+            rows={3}
+            style={{ resize: "vertical", marginBottom: 12 }}
+            placeholder="e.g. You have received 15,000 RWF from 0788123456 (John Doe). Your new balance is 87,500 RWF. Ref: MMP250217001"
+            value={smsInput}
+            onChange={e => tryParse(e.target.value)}
+          />
+          {error && <div style={{ color: "var(--red)", fontSize: 12, marginBottom: 8, fontFamily: "var(--mono)" }}>⚠ {error}</div>}
+          {parsed && (
+            <div style={{ background: "var(--green-glow)", border: "1px solid rgba(0,229,160,0.2)", borderRadius: "var(--radius-sm)", padding: "12px 16px", marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: "var(--green)", fontFamily: "var(--mono)", marginBottom: 8 }}>✓ Parsed successfully</div>
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                <span className={`badge ${parsed.type === "received" ? "green" : "red"}`}>{parsed.type}</span>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{fmt(parsed.amount)}</span>
+                <span style={{ fontSize: 12, color: "var(--text2)" }}>{parsed.name} · {parsed.phone}</span>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text3)" }}>Ref: {parsed.ref}</span>
+              </div>
+              {parsed.type === "received" && <div style={{ marginTop: 8, fontSize: 11, color: "var(--yellow)", fontFamily: "var(--mono)" }}>→ Auto-savings: {fmt(SAVINGS_DEDUCTION)} will be deducted</div>}
+            </div>
+          )}
+          <button className="btn btn-primary" onClick={handleAdd} disabled={!parsed}>
+            <Icon name="check" size={14}/> Add Transaction
+          </button>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header"><span className="card-title">SMS Log</span><span className="badge green">{transactions.length} messages</span></div>
+        <div style={{ maxHeight: 400, overflowY: "auto" }}>
+          {[...transactions].reverse().map(tx => (
+            <div className="sms-item" key={tx.id}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, alignItems: "center" }}>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <span className={`badge ${tx.type === "received" ? "green" : "red"}`}>{tx.type}</span>
+                  <span className={`badge ${tx.provider === "MTN" ? "mtn" : "airtel"}`}>{tx.provider}</span>
+                </div>
+                <span style={{ fontSize: 11, color: "var(--text3)", fontFamily: "var(--mono)" }}>{fmtDate(tx.time)} {fmtTime(tx.time)}</span>
+              </div>
+              <div className="sms-raw">{tx.raw}</div>
+              <div className="sms-parsed">
+                <span style={{ fontSize: 12 }}><strong>{tx.sender}</strong> · {tx.phone}</span>
+                <span className={`tx-amount ${tx.type}`} style={{ fontFamily: "var(--mono)", fontSize: 12, fontWeight: 700 }}>{fmt(tx.amount)}</span>
+                {tx.type === "received" && <span style={{ fontSize: 11, color: "var(--yellow)", fontFamily: "var(--mono)" }}>−{fmt(SAVINGS_DEDUCTION)} saved</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function POSView({ onAddTransaction }) {
+  const [amount, setAmount] = useState("");
+  const [phone, setPhone] = useState("");
+  const [name, setName] = useState("");
+  const [type, setType] = useState("received");
+  const [status, setStatus] = useState("idle"); // idle | pending | success | error
+  const [connPhone, setConnPhone] = useState("0788 XXX XXX");
+  const [isConnected, setIsConnected] = useState(true);
+
+  const handleKey = (k) => {
+    if (k === "C") { setAmount(""); return; }
+    if (k === "⌫") { setAmount(p => p.slice(0, -1)); return; }
+    if (amount.length < 9) setAmount(p => p + k);
+  };
+
+  const handleSend = () => {
+    if (!amount || !phone) return;
+    setStatus("pending");
+    setTimeout(() => {
+      const tx = {
+        id: `pos${Date.now()}`, type, amount: parseInt(amount),
+        sender: name || phone, phone,
+        ref: `POS${Date.now().toString().slice(-6)}`,
+        provider: phone.startsWith("078") ? "MTN" : "Airtel",
+        time: new Date().toISOString(),
+        raw: `[POS] ${type === "received" ? "Received" : "Sent"} ${parseInt(amount).toLocaleString()} RWF ${type === "received" ? "from" : "to"} ${phone} (${name || "POS Customer"}).`
+      };
+      onAddTransaction(tx);
+      setStatus("success");
+      setTimeout(() => { setStatus("idle"); setAmount(""); setPhone(""); setName(""); }, 2500);
+    }, 1500);
+  };
+
+  return (
+    <div className="pos-grid">
+      <div>
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="card-header">
+            <span className="card-title">Remote POS Terminal</span>
+            <span className={`badge ${isConnected ? "green" : "red"}`}>
+              <span style={{ width: 6, height: 6, background: isConnected ? "var(--green)" : "var(--red)", borderRadius: "50%", display: "inline-block" }}/>
+              {isConnected ? "Connected" : "Offline"}
+            </span>
+          </div>
+          <div style={{ padding: 20 }}>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: "var(--text3)", fontFamily: "var(--mono)", marginBottom: 6 }}>CONNECTED PHONE NUMBER</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input className="input-field" value={connPhone} onChange={e => setConnPhone(e.target.value)} style={{ flex: 1 }}/>
+                <button className="btn btn-outline" onClick={() => setIsConnected(p => !p)}><Icon name="wifi" size={14}/>{isConnected ? "Disconnect" : "Connect"}</button>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              {["received", "sent"].map(t => (
+                <button key={t} className={`filter-btn ${type === t ? "active" : ""}`} style={{ flex: 1 }} onClick={() => setType(t)}>
+                  {t === "received" ? "Receive Money" : "Send Money"}
+                </button>
+              ))}
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: "var(--text3)", fontFamily: "var(--mono)", marginBottom: 6 }}>CUSTOMER PHONE</div>
+              <input className="input-field" placeholder="07XX XXX XXX" value={phone} onChange={e => setPhone(e.target.value)}/>
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, color: "var(--text3)", fontFamily: "var(--mono)", marginBottom: 6 }}>CUSTOMER NAME (optional)</div>
+              <input className="input-field" placeholder="Full name" value={name} onChange={e => setName(e.target.value)}/>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header"><span className="card-title">Amount Entry</span></div>
+        <div style={{ padding: 20 }}>
+          <div className="pos-display">
+            <div className="pos-label">AMOUNT (RWF)</div>
+            <div className="pos-amount">{amount ? parseInt(amount).toLocaleString() : "0"}</div>
+            {amount && parseInt(amount) > 0 && type === "received" && (
+              <div style={{ fontSize: 11, color: "var(--yellow)", fontFamily: "var(--mono)", marginTop: 4 }}>Savings deduction: {fmt(SAVINGS_DEDUCTION)}</div>
+            )}
+          </div>
+          <div className="keypad">
+            {["1","2","3","4","5","6","7","8","9","C","0","⌫"].map(k => (
+              <div key={k} className={`key ${k === "C" ? "clear" : ""}`} onClick={() => handleKey(k)}>{k}</div>
+            ))}
+          </div>
+          <button
+            className="btn btn-primary"
+            style={{ width: "100%", marginTop: 16, justifyContent: "center", padding: "14px", fontSize: 15, opacity: (!amount || !phone || !isConnected) ? 0.5 : 1 }}
+            onClick={handleSend}
+            disabled={!amount || !phone || !isConnected || status === "pending"}
+          >
+            {status === "pending" ? "Processing..." : status === "success" ? <><Icon name="check" size={16}/> Done!</> : <><Icon name="send" size={16}/>{type === "received" ? "Request Payment" : "Send Payment"}</>}
+          </button>
+          {status === "success" && <div style={{ marginTop: 12, padding: "10px 14px", background: "var(--green-glow)", border: "1px solid rgba(0,229,160,0.2)", borderRadius: "var(--radius-sm)", fontSize: 12, color: "var(--green)", textAlign: "center", fontFamily: "var(--mono)" }}>✓ Transaction logged successfully</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Report({ transactions }) {
+  const recv = totalReceived(transactions);
+  const sent = totalSent(transactions);
+  const savings = totalSavings(transactions);
+  const net = recv - sent - savings;
+  const today = new Date().toLocaleDateString("en-GB", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
+  const mtnTx = transactions.filter(t => t.provider === "MTN");
+  const airtelTx = transactions.filter(t => t.provider === "Airtel");
+
+  return (
+    <div>
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <div className="card-title">End of Day Report</div>
+            <div style={{ fontSize: 12, color: "var(--text3)", fontFamily: "var(--mono)", marginTop: 2 }}>{today}</div>
+          </div>
+          <button className="btn btn-outline" onClick={() => window.print()}><Icon name="report" size={14}/>Export PDF</button>
+        </div>
+        <div style={{ padding: "24px 28px" }}>
+          <div className="report-section">
+            <div className="report-title">Summary</div>
+            {[
+              ["Total Received", fmt(recv), "green"],
+              ["Total Sent", fmt(sent), "red"],
+              ["Auto-Savings", fmt(savings), "yellow"],
+              ["Net Balance Change", fmt(net), "blue"],
+            ].map(([label, value, color]) => (
+              <div className="report-row" key={label}>
+                <span style={{ color: "var(--text2)" }}>{label}</span>
+                <span style={{ fontFamily: "var(--mono)", fontWeight: 700, color: `var(--${color})` }}>{value}</span>
+              </div>
+            ))}
+          </div>
+          <div className="report-section">
+            <div className="report-title">Transaction Counts</div>
+            {[
+              ["Received Transactions", transactions.filter(t => t.type === "received").length],
+              ["Sent Transactions", transactions.filter(t => t.type === "sent").length],
+              ["Total Transactions", transactions.length],
+              ["MTN MoMo Transactions", mtnTx.length],
+              ["Airtel Money Transactions", airtelTx.length],
+            ].map(([label, value]) => (
+              <div className="report-row" key={label}>
+                <span style={{ color: "var(--text2)" }}>{label}</span>
+                <span style={{ fontFamily: "var(--mono)", fontWeight: 700 }}>{value}</span>
+              </div>
+            ))}
+          </div>
+          <div className="report-section">
+            <div className="report-title">Transaction Breakdown</div>
+            <div className="tx-table" style={{ marginTop: 4 }}>
+              <div className="tx-row header"><span/><span>Counterparty</span><span>Amount</span><span>Time</span><span>Ref</span><span>Provider</span></div>
+              {[...transactions].sort((a, b) => new Date(a.time) - new Date(b.time)).map(tx => (
+                <div className="tx-row" key={tx.id}>
+                  <div className={`tx-icon ${tx.type}`}>{tx.type === "received" ? <Icon name="down" size={14}/> : <Icon name="up" size={14}/>}</div>
+                  <div><div className="tx-name">{tx.sender}</div><div className="tx-phone">{tx.phone}</div></div>
+                  <div className={`tx-amount ${tx.type}`}>{tx.type === "received" ? "+" : "−"}{fmt(tx.amount)}</div>
+                  <div className="tx-time">{fmtTime(tx.time)}</div>
+                  <div className="tx-ref">{tx.ref}</div>
+                  <span className={`badge ${tx.provider === "MTN" ? "mtn" : "airtel"} col-provider`}>{tx.provider}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div style={{ marginTop: 24, padding: "16px 20px", background: "var(--surface2)", borderRadius: "var(--radius)", border: "1px solid var(--border2)", fontSize: 12, color: "var(--text3)", fontFamily: "var(--mono)", lineHeight: 1.8 }}>
+            <div style={{ fontWeight: 700, color: "var(--text2)", marginBottom: 8 }}>COMPLIANCE NOTES</div>
+            <div>• All transactions recorded per RNB Mobile Money regulations</div>
+            <div>• Data encrypted at rest and in transit (AES-256)</div>
+            <div>• Auto-savings deductions comply with user agreement</div>
+            <div>• Report generated: {new Date().toISOString()}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+const NAV_ITEMS = [
+  { id: "dashboard", label: "Dashboard", icon: "dashboard" },
+  { id: "transactions", label: "Transactions", icon: "tx" },
+  { id: "savings", label: "Savings", icon: "savings" },
+  { id: "sms", label: "SMS Feed", icon: "sms" },
+  { id: "pos", label: "Remote POS", icon: "pos" },
+  { id: "report", label: "Daily Report", icon: "report" },
+];
+
+const PAGE_TITLES = {
+  dashboard: "Dashboard", transactions: "Transactions", savings: "Savings Tracker",
+  sms: "SMS Feed", pos: "Remote POS", report: "Daily Report"
+};
+
+export default function App() {
+  const [page, setPage] = useState("dashboard");
+  const [transactions, setTransactions] = useState(SAMPLE_SMS);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  const showToast = useCallback((msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 3000);
+  }, []);
+
+  const handleAddSMS = useCallback((tx) => {
+    setTransactions(prev => [...prev, tx]);
+    showToast(`Transaction added: ${fmt(tx.amount)} ${tx.type === "received" ? "received from" : "sent to"} ${tx.sender}`);
+  }, [showToast]);
+
+  const handleAddTransaction = useCallback((tx) => {
+    setTransactions(prev => [...prev, tx]);
+    showToast(`POS: ${fmt(tx.amount)} ${tx.type === "received" ? "received from" : "sent to"} ${tx.phone}`);
+  }, [showToast]);
+
+  const navigate = (id) => { setPage(id); setSidebarOpen(false); };
+
+  return (
+    <>
+      <style>{styles}</style>
+      <div className="app">
+        {sidebarOpen && <div className="overlay" onClick={() => setSidebarOpen(false)}/>}
+        <nav className={`sidebar ${sidebarOpen ? "open" : ""}`}>
+          <div className="sidebar-logo">
+            <div className="brand">MoMo Tracker</div>
+            <div className="sub">Rwanda Mobile Money System</div>
+            <div className="phone-badge"><span className="phone-dot"/><span style={{ fontFamily: "var(--mono)" }}>0788 ••• •••</span></div>
+          </div>
+          <div className="nav">
+            {NAV_ITEMS.map(item => (
+              <div key={item.id} className={`nav-item ${page === item.id ? "active" : ""}`} onClick={() => navigate(item.id)}>
+                <Icon name={item.icon} size={16}/>{item.label}
+              </div>
+            ))}
+          </div>
+          <div className="sidebar-footer">
+            <div className="status-pill"><span className="status-dot"/><span>SMS Connected · Live</span></div>
+          </div>
+        </nav>
+
+        <div className="main">
+          <div className="topbar">
+            <div className="topbar-left">
+              <button className="hamburger" onClick={() => setSidebarOpen(p => !p)}><Icon name={sidebarOpen ? "x" : "menu"} size={18}/></button>
+              <h1>{PAGE_TITLES[page]}</h1>
+            </div>
+            <div className="topbar-right">
+              <span style={{ fontSize: 12, color: "var(--text3)", fontFamily: "var(--mono)" }}>Feb 17, 2025</span>
+              <button className="btn-icon" onClick={() => showToast("Refreshing data...")}><Icon name="refresh" size={16}/></button>
+              <button className="btn-icon" style={{ position: "relative" }}>
+                <Icon name="bell" size={16}/>
+                <span style={{ position: "absolute", top: 4, right: 4, width: 7, height: 7, background: "var(--green)", borderRadius: "50%", border: "1.5px solid var(--surface)" }}/>
+              </button>
+            </div>
+          </div>
+
+          <div className="content">
+            {page === "dashboard" && <Dashboard transactions={transactions}/>}
+            {page === "transactions" && <Transactions transactions={transactions}/>}
+            {page === "savings" && <SavingsView transactions={transactions}/>}
+            {page === "sms" && <SMSFeed transactions={transactions} onAddSMS={handleAddSMS}/>}
+            {page === "pos" && <POSView onAddTransaction={handleAddTransaction}/>}
+            {page === "report" && <Report transactions={transactions}/>}
+          </div>
+        </div>
+
+        {toast && <div className="toast"><Icon name="check" size={14} style={{ color: "var(--green)" }}/>{toast}</div>}
+      </div>
+    </>
+  );
+}
